@@ -1,69 +1,88 @@
-# AI-First HCP CRM — Log Interaction Screen
+# 🩺 AI-First HCP CRM — Log Interaction Screen
 
-A pharma field rep never types directly into this form. Instead, they describe
-what happened (or what needs correcting) to the **AI Assistant** on the right,
-and a **LangGraph agent** — backed by Groq — extracts the structured fields and
-populates the **Log Interaction form** on the left in real time.
+An AI-agent-driven CRM screen for pharma field reps, built with **React + Redux**, **FastAPI**, and a **LangGraph** agent running on **Groq**.
 
-This matches the assignment's instructional video precisely: split-screen
-layout, AI-controlled form, natural-language logging and editing.
+The core idea: the rep never types into the form. They *describe* an interaction in plain English to an AI Assistant, and a LangGraph agent extracts the structured fields and populates a live form in real time — then edits it conversationally as the rep corrects or adds details.
 
-## How it works
+> 💬 *"Today I met with Dr. Smith and discussed product X efficacy. Sentiment was positive, shared brochures."*
+> ➡️ form fills itself out. No clicking, no typing into fields.
+
+`React` `Redux Toolkit` `FastAPI` `LangGraph` `Groq` `PostgreSQL` `SQLAlchemy`
+
+---
+
+## 🎬 Demo
+
+| Rep says... | Tool called | What happens |
+|---|---|---|
+| 📝 *"Today I met with Dr. Smith, discussed product X efficacy, positive sentiment, shared brochures"* | `log_interaction` | Form populates: HCP name, sentiment, topics, materials — all extracted from one sentence |
+| ✏️ *"Actually the name was Dr. John and sentiment was negative"* | `edit_interaction` | Only those two fields change. Everything else stays exactly as it was |
+| 💡 *"What follow-ups would you suggest?"* | `suggest_followups` | AI reads the current draft and proposes 2-4 concrete next steps |
+| 🚦 *"Can I give Dr. John 3 more units of DrugX?"* | `check_sample_compliance` | Checks a 30-day distribution limit — **correctly refuses** if it's already been given out |
+| 📋 *"Give me a briefing before my next call with Dr. John"* | `generate_call_summary` | Synthesizes the HCP's full interaction history into a short pre-call brief |
+
+---
+
+## 🧠 Why this design is harder than it looks
+
+The tricky part isn't calling an LLM — it's **state**. When a rep says *"actually it was Dr. John,"* the agent has to know *which* draft that refers to, without the rep repeating an ID and without the LLM inventing one. This project solves that with a lightweight **session-scoped draft tracker**: each browser tab gets a `session_id`, and the backend remembers which interaction row is "current" for that session — so `edit_interaction` always knows exactly what to update.
+
+The 5 tools are also built **fresh per request**, as closures over that session's ID (see `build_tools_for_session()` in `tools.py`). That means the LLM never sees or needs to pass a session/interaction ID as a tool argument — it just calls `edit_interaction(correction_text=...)` and the plumbing handles the rest invisibly.
+
+---
+
+## 🏗️ Architecture
 
 ```
-Rep types in chat  ──▶  POST /api/chat  ──▶  LangGraph Agent (per session)
+Rep types in chat  ──▶  POST /api/chat  ──▶  LangGraph Agent (rebuilt per session)
                                                   │
                                        ┌──────────┴──────────┐
-                                       │   Groq LLM (openai/gpt-oss-20b)  │
+                                       │  Groq LLM (openai/gpt-oss-20b)  │
                                        └──────────┬──────────┘
                                                   │
-                          5 tools: log_interaction, edit_interaction,
-                          suggest_followups, check_sample_compliance,
-                          generate_call_summary
+                    5 tools: log_interaction, edit_interaction,
+                    suggest_followups, check_sample_compliance,
+                    generate_call_summary
                                                   │
                                                   ▼
-                                     Postgres (SQLAlchemy) + session memory
+                         Postgres (SQLAlchemy) + in-memory session map
                                                   │
                                                   ▼
-                          Full form_state returned ──▶ Redux ──▶ Form Panel
-                                                                (re-renders live)
+                    Full form_state returned ──▶ Redux ──▶ Form Panel
+                                                          (re-renders live, read-only)
 ```
 
-A `session_id` (generated once per browser tab) lets the backend know which
-draft interaction a correction like *"actually the name was Dr. John"* applies
-to, without the rep or the LLM ever needing to reference an ID.
+---
 
-## The 5 LangGraph tools
+## 🛠️ The 5 LangGraph tools
 
 | Tool | Purpose |
 |---|---|
-| `log_interaction` **(required)** | Extracts HCP name, sentiment, topics, samples, materials shared, etc. from free text and creates a new draft — this is what first populates the form. |
-| `edit_interaction` **(required)** | Given a correction, updates ONLY the mentioned fields on the session's current draft, leaving everything else untouched. |
-| `suggest_followups` | Generates the "AI Suggested Follow-ups" list shown under the form, based on what was discussed. |
-| `check_sample_compliance` | Checks a proposed sample handout against a 30-day quantity limit per product per HCP. |
-| `generate_call_summary` | Synthesizes an HCP's past interactions into a short pre-call briefing, using the larger Groq model. |
+| ✅ `log_interaction` **(required)** | Extracts HCP name, sentiment, topics, samples, materials shared, etc. from free text and creates a new draft for this session. |
+| ✅ `edit_interaction` **(required)** | Updates ONLY the fields mentioned in a correction, on the session's current draft — never touches unrelated fields. |
+| 💡 `suggest_followups` | Generates 2-4 concrete, specific next-step suggestions based on what was actually discussed. |
+| 🚦 `check_sample_compliance` | Validates a proposed sample handout against a 30-day quantity limit — and will refuse a request that exceeds it. |
+| 📋 `generate_call_summary` | Synthesizes an HCP's full interaction history into a short pre-call briefing, using a larger model for the reasoning-heavy synthesis step. |
 
-## Tech stack
+---
 
-- **Frontend:** React + Redux Toolkit, Google Inter font, split-panel layout
+## ⚙️ Tech stack
+
+- **Frontend:** React + Redux Toolkit, Google Inter font, read-only AI-driven form panel
 - **Backend:** FastAPI
-- **Agent framework:** LangGraph (agent rebuilt per-request, tools bound to session via closure)
-- **LLM:** Groq — `openai/gpt-oss-20b` for extraction/tool tasks, `openai/gpt-oss-120b` for call-summary synthesis
-- **Database:** PostgreSQL (SQLAlchemy ORM)
+- **Agent framework:** LangGraph — agent rebuilt per-request with tools bound to session via closure (no global state, no ID leakage to the LLM)
+- **LLM:** Groq — `openai/gpt-oss-20b` for extraction/tool-calling, `openai/gpt-oss-120b` for the reasoning-heavier call-summary task
+- **Database:** PostgreSQL via SQLAlchemy
 
-### A note on the LLM models used
+### 🔧 A real problem I hit and fixed: model deprecation
 
-The assignment names `gemma2-9b-it` (with `llama-3.3-70b-versatile` as a fallback).
-By the time this was built, Groq had **decommissioned `gemma2-9b-it`**, and its
-own suggested replacement (`llama-3.1-8b-instant`) had *also* been deprecated
-as of June 17, 2026 — along with `llama-3.3-70b-versatile`. This project uses
-Groq's current recommended models instead: `openai/gpt-oss-20b` (small/fast)
-and `openai/gpt-oss-120b` (larger, for reasoning-heavy tasks). See
-https://console.groq.com/docs/deprecations for the live list.
+The assignment spec names `gemma2-9b-it`. By the time this was built, Groq had **decommissioned that model outright** — and its own suggested fallback, `llama-3.1-8b-instant` (along with `llama-3.3-70b-versatile`), had *also* been deprecated as of June 17, 2026. Rather than silently failing, this project checks Groq's live model list and uses their current recommendations: `openai/gpt-oss-20b` and `openai/gpt-oss-120b`. See [Groq's deprecations page](https://console.groq.com/docs/deprecations) for the up-to-date list. This is exactly the kind of thing that breaks in production when you depend on a fast-moving inference provider — worth knowing how to detect and fix, not just work around once.
 
-## Running it locally
+---
 
-### 1. Backend
+## 🚀 Running it locally
+
+### Backend
 
 ```bash
 cd backend
@@ -73,10 +92,9 @@ cp .env.example .env   # fill in GROQ_API_KEY and DATABASE_URL
 uvicorn app.main:app --reload --port 8000
 ```
 
-Tables are created automatically on startup. No manual HCP row is needed —
-the form starts empty and is populated entirely by the AI Assistant.
+Tables are created automatically on startup. No seed data needed — the form starts empty and is populated entirely by the AI.
 
-### 2. Frontend
+### Frontend
 
 ```bash
 cd frontend
@@ -86,29 +104,27 @@ npm start
 
 Opens on `http://localhost:3000`.
 
-## Demoing the 5 tools
+---
 
-In the AI Assistant chat, try:
+## 🔭 Scoped out / next steps
 
-1. **`log_interaction`**: *"Today I met with Dr. Smith and discussed product X
-   efficacy. The sentiment was positive and I shared the brochures."*
-   → watch the left form populate live.
-2. **`edit_interaction`**: *"Actually the name was Dr. John and the sentiment
-   was negative."* → only those two fields change.
-3. **`suggest_followups`**: *"What follow-ups would you suggest?"* → the AI
-   Suggested Follow-ups list appears under the form.
-4. **`check_sample_compliance`**: *"Can I give Dr. John 3 more units of DrugX?"*
-5. **`generate_call_summary`**: *"Give me a briefing before my next call with
-   Dr. John."*
+- **Persistent session state** — currently in-memory, would move to Redis or the DB itself, keyed by authenticated rep ID
+- **Real compliance rules** — currently a flat 30-day mock limit, would connect to actual per-product/per-region regulatory data
+- **Normalized HCP records** — currently free-text name matching (`ILIKE`), would move to a proper HCP master table with foreign keys
+- **Auth & roles** — would add JWT-based auth with rep vs. manager access levels
 
-## Known limitations / next steps
+---
 
-- Session state (which draft is "current") is stored in-memory on the backend
-  and resets on restart — a production version would persist this in Redis or
-  the database itself.
-- `check_sample_compliance` uses a simple mock 30-day flat limit rather than
-  real per-product, per-region regulatory rules.
-- HCP matching for compliance/summary tools is a simple name-based `ILIKE`
-  lookup rather than a proper foreign-key relationship — a deliberate
-  simplification since this screen treats HCP name as a free-text AI-filled
-  field, not a normalized lookup.
+## 🎯 What this project demonstrates
+
+- Designing an **agentic UI**, where the LLM's output directly drives application state rather than just producing text
+- Handling **multi-turn conversational state** without leaking implementation details (session IDs, database IDs) into the LLM's tool-calling surface
+- **Debugging a real external-dependency failure** (model deprecation) and adapting rather than hard-coding around it
+- Balancing 5 required tools across **must-have extraction/editing logic** and genuinely useful **sales-adjacent features** (compliance, briefings, follow-ups)
+
+
+---
+
+## 👩‍💻 Author
+
+Built by Niveditha - feel free to reach out at nivedithar483@gmail.com for any
